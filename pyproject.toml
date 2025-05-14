@@ -1,0 +1,14 @@
+[tool.poetry]
+name = "cyberclone"
+version = "0.1.0"
+description = ""
+authors = ["fbw <844255371@qq.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
