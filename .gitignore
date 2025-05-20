@@ -91,6 +91,17 @@ ChatGPT
 
 # pyCharm
 *.idea
+__pycache__
 
 # venv
 .venv
+
+#  chainlit
+.chainlit
+.files
+
+# LLM && TTS
+.wav
+.mp3
+pretrained_models
+.safetensors
