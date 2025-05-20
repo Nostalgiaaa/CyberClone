@@ -1,10 +1,20 @@
+import os
 import chainlit as cl
 from langchain_community.llms import Ollama
-import re  # 正则表达式有时可以帮助更复杂的解析，但这里我们先用字符串查找
+import whisper  # 新增：用于语音识别 (STT)
+from gradio_client import Client, file
 
 # --- 配置 ---
-OLLAMA_MODEL_NAME = "qwen3:14b"  # 您在 Ollama 中部署的模型名
+OLLAMA_MODEL_NAME = "qwen3:8b"  # 您在 Ollama 中部署的模型名
 OLLAMA_BASE_URL = "http://localhost:11434"  # 您的 Ollama 服务地址
+AVATAR_IMAGE_PATH = "./img/avatar.png"  # 【新增/修改】确保您的头像图片在此路径
+WHISPER_MODEL_SIZE = "base"  # 新增：Whisper模型大小
+
+# Define a threshold for detecting silence and a timeout for ending a turn
+SILENCE_THRESHOLD = (
+    3500  # Adjust based on your audio level (e.g., lower for quieter audio)
+)
+SILENCE_TIMEOUT = 1300.0  # Seconds of silence to consider the turn finished
 
 # --- 初始化 LangChain 组件 ---
 llm = Ollama(
@@ -15,15 +25,52 @@ llm = Ollama(
 # 简单的提示模板，期望模型在回复中自然包含 <think>...</think> 标签
 # 您可能需要根据您的模型调整此提示，以确保它能按预期工作
 prompt_template_str = """用户: {user_message}
-AI: """
+你不可以使用任何特殊符号，用纯中文返回 """
 
 
 @cl.on_chat_start
 async def start_chat():
-    cl.user_session.set("llm", llm)
+    # 初始化Ollama LLM并存入用户会话
+    llm_instance = Ollama(model=OLLAMA_MODEL_NAME, base_url=OLLAMA_BASE_URL)
+    cl.user_session.set("llm", llm_instance)
+    # 初始化Whisper STT模型 (如果尚未加载)
+    stt_model = whisper.load_model
+    cl.user_session.set("stt_model", stt_model)  # 将STT模型（即使是None）存入session
+
+    # 发送欢迎消息和AI头像图片
+    elements = []
+    if os.path.exists(AVATAR_IMAGE_PATH):
+        try:
+            with open(AVATAR_IMAGE_PATH, "rb") as f:
+                avatar_bytes = f.read()
+            elements.append(
+                cl.Image(
+                    content=avatar_bytes,
+                    name="avatar_pic_start",
+                    display="inline",
+                    size="medium",
+                )
+            )
+            print(f"DEBUG: 头像图片 '{AVATAR_IMAGE_PATH}' 已准备好在欢迎消息中显示。")
+        except Exception as e:
+            print(f"错误：加载欢迎消息头像图片失败 - {e}")
+    else:
+        print(f"警告：未找到头像图片路径 '{AVATAR_IMAGE_PATH}'。欢迎消息将不带头像。")
+
+    # 【修改】将头像元素加入欢迎消息，并设置author
     await cl.Message(
-        content=f"你好！我是基于 **{OLLAMA_MODEL_NAME}** 模型的AI助手。请问有什么可以帮您的吗？"
+        content=f"你好！我是基于 **{OLLAMA_MODEL_NAME}** 模型的AI助手。请问有什么可以帮您的吗？",
+        elements=elements,  # 添加图片元素
+        author="AI助手",  # 设置作者名，会显示在头像旁边
     ).send()
+
+
+@cl.on_audio_start
+async def on_audio_start():
+    cl.user_session.set("silent_duration_ms", 0)
+    cl.user_session.set("is_speaking", False)
+    cl.user_session.set("audio_chunks", [])
+    return True
 
 
 @cl.on_message
@@ -31,13 +78,40 @@ async def main(message: cl.Message):
     user_message_content = message.content
     current_llm = cl.user_session.get("llm")
 
+    if not user_message_content:  # 【新增】简单校验用户输入是否为空
+        await cl.Message(content="请输入您的问题。", author="系统").send()
+        return
+
     final_prompt = prompt_template_str.format(user_message=user_message_content)
+
+    # 【新增】为AI回复准备头像元素
+    ai_reply_elements = []
+    if os.path.exists(AVATAR_IMAGE_PATH):
+        try:
+            with open(AVATAR_IMAGE_PATH, "rb") as f:
+                avatar_bytes_reply = f.read()
+            ai_reply_elements.append(
+                cl.Image(
+                    content=avatar_bytes_reply,
+                    name="avatar_reply",
+                    display="inline",
+                    size="small",  # AI回复时的头像可以小一点
+                )
+            )
+        except Exception as e:
+            print(f"错误：加载AI回复头像图片失败 - {e}")
 
     # ---- 初始化 Chainlit UI 元素 ----
     # 1. 创建 "AI 思考过程" 的步骤 UI，初始内容为空
     #    这个 step 的 output 会在解析到完整的 <think>...</think> 内容后更新
     async with cl.Step(name="AI 思考过程", show_input=False) as think_step:
         think_step.output = ""  # 先设置为空，或者 "正在思考..."
+
+        # 【修改】将头像元素加入 final_reply_msg，并设置 author
+        final_reply_msg = cl.Message(
+            content="", author="AI助手", elements=ai_reply_elements
+        )
+        await final_reply_msg.send()
 
         # 2. 创建最终回复的空消息 UI，用于流式填充
         final_reply_msg = cl.Message(content="")
@@ -47,6 +121,7 @@ async def main(message: cl.Message):
         accumulated_think_content = ""  # 用于累积 <think> 标签内的内容
         current_processing_buffer = ""  # 用于处理跨 token 的标签
         is_inside_think_block = False  # 当前是否正在解析 <think> 标签内的内容
+        reply_content = ""  #  记录 LLM 最终回复的结果，转成 LLM 用
 
         try:
             print(f"DEBUG: Sending prompt to LLM: '{final_prompt[:300]}...'")
@@ -103,6 +178,7 @@ async def main(message: cl.Message):
                             # 如果 buffer 中没有 '<'，则可以安全地流式输出整个 buffer
                             if "<" not in current_processing_buffer:
                                 if current_processing_buffer:
+                                    reply_content += current_processing_buffer
                                     await final_reply_msg.stream_token(
                                         current_processing_buffer
                                     )
@@ -120,6 +196,7 @@ async def main(message: cl.Message):
             if current_processing_buffer:
                 if not is_inside_think_block:  # 如果最后是在回复状态
                     # print(f"DEBUG: Streaming remaining buffer as reply: '{current_processing_buffer}'")
+                    reply_content += current_processing_buffer
                     await final_reply_msg.stream_token(current_processing_buffer)
                 else:  # 如果流结束时仍在 think 块内（标签不完整）
                     # print(f"DEBUG: Appending remaining buffer to think content: '{current_processing_buffer}'")
@@ -129,14 +206,21 @@ async def main(message: cl.Message):
             # 最终检查和设置默认值
             if not think_step.output or think_step.output == "正在生成思考计划...":
                 think_step.output = "(模型未提供明确的思考过程标签内容)"
-
-            if not final_reply_msg.content.strip():
-                await final_reply_msg.update()
-
             print("DEBUG: Stream processing complete.")
+            if len(reply_content) <= 2:
+                return
+            audio_path = text_to_speech(reply_content)
+            output_audio_el = cl.Audio(
+                name="语音",
+                path=audio_path,
+                display="inline",
+            )
+
+            await cl.Message(content="", elements=[output_audio_el]).send()
 
         except Exception as e:
             error_msg = f"处理流时出错: {str(e)}"
+            print(e)
             print(f"ERROR: Exception during stream processing: {error_msg}")
             if final_reply_msg and final_reply_msg.id:
                 await final_reply_msg.update()
@@ -144,3 +228,28 @@ async def main(message: cl.Message):
                 await cl.Message(content=error_msg).send()
             if think_step and think_step.id:  # 更新step的错误信息
                 think_step.output = error_msg
+
+
+def text_to_speech(text: str) -> str:
+    os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+    client = Client("http://127.0.0.1:9872/")
+    result = client.predict(
+        ref_wav_path=file("./TTS/train/参考.wav"),
+        prompt_text="模型切换，请上传并填写参考信息，请填写需要合成的目标文本和语种模式",
+        prompt_language="中文",
+        text=text,
+        text_language="中文",
+        how_to_cut="凑四句一切",
+        top_k=15,
+        top_p=1,
+        temperature=1,
+        ref_free=False,
+        speed=1,
+        if_freeze=False,
+        inp_refs=None,
+        sample_steps=8,
+        if_sr=False,
+        pause_second=0.3,
+        api_name="/get_tts_wav",
+    )
+    return result

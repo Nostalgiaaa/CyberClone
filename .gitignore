@@ -101,7 +101,7 @@ __pycache__
 .files
 
 # LLM && TTS
-.wav
-.mp3
+*.wav
+*.mp3
 pretrained_models
 .safetensors

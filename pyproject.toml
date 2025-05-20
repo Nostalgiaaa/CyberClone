@@ -13,7 +13,8 @@ fastapi = "0.115.12"
 uvicorn = {extras = ["standard"], version = "^0.34.2"}
 ollama = "0.4.8"
 black = "^25.1.0"
-chainlit = "^2.5.5"
+chainlit = "2.5.5"
+openai-whisper = "^20240930"
 
 
 [build-system]
