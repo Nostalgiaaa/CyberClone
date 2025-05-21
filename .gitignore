@@ -100,8 +100,18 @@ __pycache__
 .chainlit
 .files
 
-# LLM && TTS
+# LLM && TTS && pic
 *.wav
 *.mp3
 pretrained_models
-.safetensors
+*.safetensors
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.ico
+
+# 训练数据
+wechat
