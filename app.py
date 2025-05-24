@@ -1,14 +1,22 @@
 import os
 import chainlit as cl
-from langchain_community.llms import Ollama
-import whisper  # 新增：用于语音识别 (STT)
+from langchain_community.llms import Ollama 
 from gradio_client import Client, file
+import requests
+from prompts.prompt_generator import generate_prompt
 
 # --- 配置 ---
-OLLAMA_MODEL_NAME = "qwen3:8b"  # 您在 Ollama 中部署的模型名
+OLLAMA_MODEL_NAME = "qwen3:14b"  # 您在 Ollama 中部署的模型名
 OLLAMA_BASE_URL = "http://localhost:11434"  # 您的 Ollama 服务地址
 AVATAR_IMAGE_PATH = "./img/avatar.png"  # 【新增/修改】确保您的头像图片在此路径
 WHISPER_MODEL_SIZE = "base"  # 新增：Whisper模型大小
+
+# 加载个性化提示词
+try:
+    personality_prompt = generate_prompt('./prompts/user_config.json')
+except Exception as e:
+    print(f"警告：加载个性化提示词失败 - {e}")
+    personality_prompt = ""
 
 # Define a threshold for detecting silence and a timeout for ending a turn
 SILENCE_THRESHOLD = (
@@ -22,10 +30,13 @@ llm = Ollama(
     base_url=OLLAMA_BASE_URL,
 )
 
-# 简单的提示模板，期望模型在回复中自然包含 <think>...</think> 标签
-# 您可能需要根据您的模型调整此提示，以确保它能按预期工作
-prompt_template_str = """用户: {user_message}
-你不可以使用任何特殊符号，用纯中文返回 """
+# 修改提示模板，加入个性化设定
+prompt_template_str = """{personality_config}
+
+用户问题：{user_message}
+
+请根据以上角色设定和个性特征来回答问题。回答时要自然流畅，不要提及或显式引用角色设定。
+回答："""
 
 
 @cl.on_chat_start
@@ -33,9 +44,6 @@ async def start_chat():
     # 初始化Ollama LLM并存入用户会话
     llm_instance = Ollama(model=OLLAMA_MODEL_NAME, base_url=OLLAMA_BASE_URL)
     cl.user_session.set("llm", llm_instance)
-    # 初始化Whisper STT模型 (如果尚未加载)
-    stt_model = whisper.load_model
-    cl.user_session.set("stt_model", stt_model)  # 将STT模型（即使是None）存入session
 
     # 发送欢迎消息和AI头像图片
     elements = []
@@ -78,11 +86,15 @@ async def main(message: cl.Message):
     user_message_content = message.content
     current_llm = cl.user_session.get("llm")
 
-    if not user_message_content:  # 【新增】简单校验用户输入是否为空
+    if not user_message_content:
         await cl.Message(content="请输入您的问题。", author="系统").send()
         return
 
-    final_prompt = prompt_template_str.format(user_message=user_message_content)
+    # 使用个性化提示词构建最终提示
+    final_prompt = prompt_template_str.format(
+        personality_config=personality_prompt,
+        user_message=user_message_content
+    )
 
     # 【新增】为AI回复准备头像元素
     ai_reply_elements = []

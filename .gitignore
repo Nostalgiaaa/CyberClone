@@ -115,3 +115,6 @@ pretrained_models
 
 # 训练数据
 wechat
+
+# 配置文件
+user_config.json
