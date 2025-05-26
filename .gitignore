@@ -118,3 +118,6 @@ wechat
 
 # 配置文件
 user_config.json
+
+# 编辑器
+.vscode

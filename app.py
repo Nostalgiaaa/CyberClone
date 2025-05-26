@@ -4,12 +4,14 @@ from langchain_community.llms import Ollama
 from gradio_client import Client, file
 import requests
 from prompts.prompt_generator import generate_prompt
+from memory import ShortTermMemory
 
 # --- 配置 ---
 OLLAMA_MODEL_NAME = "qwen3:14b"  # 您在 Ollama 中部署的模型名
 OLLAMA_BASE_URL = "http://localhost:11434"  # 您的 Ollama 服务地址
 AVATAR_IMAGE_PATH = "./img/avatar.png"  # 【新增/修改】确保您的头像图片在此路径
 WHISPER_MODEL_SIZE = "base"  # 新增：Whisper模型大小
+MEMORY_K = 10  # 保留最近5轮对话
 
 # 加载个性化提示词
 try:
@@ -33,17 +35,24 @@ llm = Ollama(
 # 修改提示模板，加入个性化设定
 prompt_template_str = """{personality_config}
 
-用户问题：{user_message}
+历史对话：
+{history}
 
-请根据以上角色设定和个性特征来回答问题。回答时要自然流畅，不要提及或显式引用角色设定。
+用户问题：{input}
+
+请根据以上角色设定和对话历史来回答问题。回答时要自然流畅，不要提及或显式引用角色设定。
 回答："""
 
 
 @cl.on_chat_start
 async def start_chat():
-    # 初始化Ollama LLM并存入用户会话
-    llm_instance = Ollama(model=OLLAMA_MODEL_NAME, base_url=OLLAMA_BASE_URL)
-    cl.user_session.set("llm", llm_instance)
+    # 初始化 Ollama LLM
+    llm = Ollama(model=OLLAMA_MODEL_NAME, base_url=OLLAMA_BASE_URL)
+    cl.user_session.set("llm", llm)
+    
+    # 初始化短期记忆
+    memory = ShortTermMemory(k=MEMORY_K)
+    cl.user_session.set("memory", memory)
 
     # 发送欢迎消息和AI头像图片
     elements = []
@@ -83,20 +92,15 @@ async def on_audio_start():
 
 @cl.on_message
 async def main(message: cl.Message):
-    user_message_content = message.content
-    current_llm = cl.user_session.get("llm")
+    llm = cl.user_session.get("llm")
+    memory = cl.user_session.get("memory")
+    user_message = message.content
 
-    if not user_message_content:
+    if not user_message:
         await cl.Message(content="请输入您的问题。", author="系统").send()
         return
 
-    # 使用个性化提示词构建最终提示
-    final_prompt = prompt_template_str.format(
-        personality_config=personality_prompt,
-        user_message=user_message_content
-    )
-
-    # 【新增】为AI回复准备头像元素
+    # 准备AI回复的头像
     ai_reply_elements = []
     if os.path.exists(AVATAR_IMAGE_PATH):
         try:
@@ -107,7 +111,7 @@ async def main(message: cl.Message):
                     content=avatar_bytes_reply,
                     name="avatar_reply",
                     display="inline",
-                    size="small",  # AI回复时的头像可以小一点
+                    size="small",
                 )
             )
         except Exception as e:
@@ -136,9 +140,22 @@ async def main(message: cl.Message):
         reply_content = ""  #  记录 LLM 最终回复的结果，转成 LLM 用
 
         try:
-            print(f"DEBUG: Sending prompt to LLM: '{final_prompt[:300]}...'")
+            # 获取历史对话
+            history = memory.get_formatted_history()
+            
+            # 构建提示
+            prompt = prompt_template_str.format(
+                personality_config=personality_prompt,
+                history=history,
+                input=user_message
+            )
+            
+            # 添加用户消息到记忆
+            memory.add_user_message(user_message)
+            
+            print(f"DEBUG: Sending prompt to LLM: '{prompt[:300]}...'")
 
-            async for token in current_llm.astream(final_prompt):
+            async for token in llm.astream(prompt):
                 if not token:
                     continue
 
@@ -221,6 +238,11 @@ async def main(message: cl.Message):
             print("DEBUG: Stream processing complete.")
             if len(reply_content) <= 2:
                 return
+
+            # 添加AI回复到记忆
+            if reply_content:
+                memory.add_ai_message(reply_content)
+
             audio_path = text_to_speech(reply_content)
             output_audio_el = cl.Audio(
                 name="语音",
@@ -243,25 +265,49 @@ async def main(message: cl.Message):
 
 
 def text_to_speech(text: str) -> str:
-    os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
-    client = Client("http://127.0.0.1:9872/")
-    result = client.predict(
-        ref_wav_path=file("./TTS/train/参考.wav"),
-        prompt_text="模型切换，请上传并填写参考信息，请填写需要合成的目标文本和语种模式",
-        prompt_language="中文",
-        text=text,
-        text_language="中文",
-        how_to_cut="凑四句一切",
-        top_k=15,
-        top_p=1,
-        temperature=1,
-        ref_free=False,
-        speed=1,
-        if_freeze=False,
-        inp_refs=None,
-        sample_steps=8,
-        if_sr=False,
-        pause_second=0.3,
-        api_name="/get_tts_wav",
-    )
-    return result
+    """将文本转换为语音
+
+    Args:
+        text: 要转换的文本
+
+    Returns:
+        str: 生成的音频文件路径
+    """
+    try:
+        os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+        client = Client("http://localhost:9872/")
+        
+        # 确保参考音频文件存在
+        ref_wav_path = "./TTS/train/参考.wav"
+        if not os.path.exists(ref_wav_path):
+            raise FileNotFoundError(f"参考音频文件不存在: {ref_wav_path}")
+            
+        print(f"DEBUG: 开始TTS转换，文本长度: {len(text)}")
+        print(f"DEBUG: 参考音频文件: {ref_wav_path}")
+        
+        result = client.predict(
+            ref_wav_path=file(ref_wav_path),
+            prompt_text="模型切换，请上传并填写参考信息，请填写需要合成的目标文本和语种模式",
+            prompt_language="中文",
+            text=text,
+            text_language="中文",
+            how_to_cut="凑四句一切",
+            top_k=15,
+            top_p=1,
+            temperature=1,
+            ref_free=False,
+            speed=1,
+            if_freeze=False,
+            inp_refs=None,
+            sample_steps=8,
+            if_sr=False,
+            pause_second=0.3,
+            api_name="/get_tts_wav"
+        )
+        
+        print(f"DEBUG: TTS转换完成，结果: {result}")
+        return result
+        
+    except Exception as e:
+        print(f"ERROR: TTS转换失败 - {str(e)}")
+        raise

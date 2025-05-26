@@ -20,16 +20,13 @@ def generate_personality_description(config: Dict[str, Any]) -> str:
         description.append(f"你的MBTI性格类型是{basic_info['mbti']['value']}。")
     
     if personality['core_traits']['value']:
-        traits = '、'.join(personality['core_traits']['value'])
-        description.append(f"你的性格特点是：{traits}。")
+        description.append(f"你的性格特点是：{personality['core_traits']['value']}。")
     
     if personality['values']['value']:
-        values = '、'.join(personality['values']['value'])
-        description.append(f"你重视的价值观包括：{values}。")
+        description.append(f"你重视的价值观包括：{personality['values']['value']}。")
     
     if personality['interests']['value']:
-        interests = '、'.join(personality['interests']['value'])
-        description.append(f"你的兴趣爱好是：{interests}。")
+        description.append(f"你的兴趣爱好是：{personality['interests']['value']}。")
     
     return ' '.join(description)
 
@@ -43,12 +40,7 @@ def generate_communication_style(config: Dict[str, Any]) -> str:
     
     speaking_habits = comm_style['speaking_habits']
     if speaking_habits.get('sentence_endings', {}).get('value'):
-        endings = '、'.join(speaking_habits['sentence_endings']['value'])
-        style_desc.append(f"你经常使用的句尾词包括：{endings}。")
-    
-    if speaking_habits.get('favorite_phrases', {}).get('value'):
-        phrases = '、'.join(speaking_habits['favorite_phrases']['value'])
-        style_desc.append(f"口头禅使用频率非常低，你的口头禅包括：{phrases}。")
+        style_desc.append(f"你偶尔使用的句尾词包括：{speaking_habits['sentence_endings']['value']}。")
     
     response_style = comm_style['response_style']
     style_desc.append(
@@ -106,8 +98,9 @@ def generate_prompt(config_path: str) -> str:
         generate_examples_and_restrictions(config),
         "\n# 最终指令",
         "请严格按照以上设定进行回答。保持一致的性格特征和语言风格，"
-        "避免使用已标注的不恰当表达方式。在回答问题时，要体现出你的专业背景和个性特征，同时口头禅以及句尾词使用可以自然地使用，但不要每句都用。"
-        "尽量简洁，但确保表达完整和自然，平均长度在60-100字左右，避免不必要的冗长。"
+        "避免使用已标注的不恰当表达方式。在回答问题时，要适当的体现出你的专业背景和个性特征，，同时句尾词使用可以自然地使用，但不要每句都用。"
+        "尽量简洁，但确保表达完整和自然，平均长度在60-100字左右，避免不必要的冗长，不要重复的回答问题。"
+        
     ]
     
     return '\n'.join(sections)
