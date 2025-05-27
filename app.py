@@ -80,7 +80,7 @@ async def start_chat():
         for msg in messages:
             m = cl.Message(
                 content=msg["content"],
-                author='Assistant',
+                author=msg["author"],
                 metadata={"time": msg["metadata"]["timestamp"]},
             )
             await m.send()
@@ -146,12 +146,9 @@ async def on_load_history(action):
         for msg in messages:
             m = cl.Message(
                 content=msg["content"],
-                author='user',
+                author=msg["author"],
                 metadata={"time": msg["metadata"]["timestamp"]},
             )
-            if msg["author"] == "用户":
-                m.indent = True  # 用户消息添加气泡
-                m.align = "right"  # 用户消息靠右
             await m.send()
 
 @cl.on_audio_start
