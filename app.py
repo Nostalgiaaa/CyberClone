@@ -4,14 +4,16 @@ from langchain_community.llms import Ollama
 from gradio_client import Client, file
 import requests
 from prompts.prompt_generator import generate_prompt
-from memory import ShortTermMemory
+from memory import ShortTermMemory, ChatMemory
 
 # --- 配置 ---
 OLLAMA_MODEL_NAME = "qwen3:14b"  # 您在 Ollama 中部署的模型名
 OLLAMA_BASE_URL = "http://localhost:11434"  # 您的 Ollama 服务地址
 AVATAR_IMAGE_PATH = "./img/avatar.png"  # 【新增/修改】确保您的头像图片在此路径
 WHISPER_MODEL_SIZE = "base"  # 新增：Whisper模型大小
-MEMORY_K = 10  # 保留最近5轮对话
+MEMORY_K = 10  # 保留最近10轮对话
+CHAT_MEMORY_DIR = "./memory/chat_memory"  # 向量数据库存储目录
+HISTORY_PAGE_SIZE = 5  # 每页显示的历史记录数
 
 # 加载个性化提示词
 try:
@@ -50,11 +52,40 @@ async def start_chat():
     llm = Ollama(model=OLLAMA_MODEL_NAME, base_url=OLLAMA_BASE_URL)
     cl.user_session.set("llm", llm)
     
-    # 初始化短期记忆
+    # 初始化短期记忆和向量存储记忆
     memory = ShortTermMemory(k=MEMORY_K)
+    chat_memory = ChatMemory(persist_directory=CHAT_MEMORY_DIR)
     cl.user_session.set("memory", memory)
+    cl.user_session.set("chat_memory", chat_memory)
+    
+    # 获取最后一页的历史记录
+    interactions, total_count = chat_memory.get_recent_interactions(
+        page=1,
+        page_size=HISTORY_PAGE_SIZE
+    )
+    
+    if interactions:
+        # 计算总页数
+        total_pages = (total_count + HISTORY_PAGE_SIZE - 1) // HISTORY_PAGE_SIZE
+        cl.user_session.set("total_pages", total_pages)
+        cl.user_session.set("current_page", 1)
+        
+        # 创建操作按钮
+        actions = []
+        if total_pages > 1:
+            actions.append(cl.Action(name="load_history", value="load", label="查看更早的对话"))
+            
+        # 发送历史消息
+        messages = chat_memory.format_interactions_for_display(interactions)
+        for msg in messages:
+            m = cl.Message(
+                content=msg["content"],
+                author='Assistant',
+                metadata={"time": msg["metadata"]["timestamp"]},
+            )
+            await m.send()
 
-    # 发送欢迎消息和AI头像图片
+    # 发送欢迎消息
     elements = []
     if os.path.exists(AVATAR_IMAGE_PATH):
         try:
@@ -68,19 +99,60 @@ async def start_chat():
                     size="medium",
                 )
             )
-            print(f"DEBUG: 头像图片 '{AVATAR_IMAGE_PATH}' 已准备好在欢迎消息中显示。")
         except Exception as e:
             print(f"错误：加载欢迎消息头像图片失败 - {e}")
-    else:
-        print(f"警告：未找到头像图片路径 '{AVATAR_IMAGE_PATH}'。欢迎消息将不带头像。")
 
-    # 【修改】将头像元素加入欢迎消息，并设置author
     await cl.Message(
         content=f"你好！我是基于 **{OLLAMA_MODEL_NAME}** 模型的AI助手。请问有什么可以帮您的吗？",
-        elements=elements,  # 添加图片元素
-        author="AI助手",  # 设置作者名，会显示在头像旁边
+        elements=elements,
+        author="AI助手",
     ).send()
 
+@cl.action_callback("load_history")
+async def on_load_history(action):
+    chat_memory = cl.user_session.get("chat_memory") # chat_memory 是 ChatMemory 类的实例
+    current_page = cl.user_session.get("current_page", 1)
+    total_pages = cl.user_session.get("total_pages", 1) 
+    
+    if current_page >= total_pages:
+        return
+    
+    next_page = current_page + 1
+    
+    # 获取更早的历史记录
+    interactions, _ = chat_memory.get_recent_interactions(
+        page=next_page,
+        page_size=HISTORY_PAGE_SIZE,
+        include_total=False
+    )
+    
+    if interactions:
+        # 创建操作按钮
+        actions = []
+        if next_page < total_pages:
+            actions.append(cl.Action(name="load_history", value="load", label="查看更早的对话"))
+        
+        # 更新当前页码
+        cl.user_session.set("current_page", next_page)
+        
+        # 发送页码信息
+        await cl.Message(
+            content=f"历史对话记录（第{next_page}/{total_pages}页）：",
+            actions=actions
+        ).send()
+        
+        # 发送历史消息
+        messages = chat_memory.format_interactions_for_display(interactions)
+        for msg in messages:
+            m = cl.Message(
+                content=msg["content"],
+                author='user',
+                metadata={"time": msg["metadata"]["timestamp"]},
+            )
+            if msg["author"] == "用户":
+                m.indent = True  # 用户消息添加气泡
+                m.align = "right"  # 用户消息靠右
+            await m.send()
 
 @cl.on_audio_start
 async def on_audio_start():
@@ -94,6 +166,7 @@ async def on_audio_start():
 async def main(message: cl.Message):
     llm = cl.user_session.get("llm")
     memory = cl.user_session.get("memory")
+    chat_memory = cl.user_session.get("chat_memory")  # 获取向量存储记忆
     user_message = message.content
 
     if not user_message:
@@ -119,13 +192,14 @@ async def main(message: cl.Message):
 
     # ---- 初始化 Chainlit UI 元素 ----
     # 1. 创建 "AI 思考过程" 的步骤 UI，初始内容为空
-    #    这个 step 的 output 会在解析到完整的 <think>...</think> 内容后更新
     async with cl.Step(name="AI 思考过程", show_input=False) as think_step:
         think_step.output = ""  # 先设置为空，或者 "正在思考..."
 
         # 【修改】将头像元素加入 final_reply_msg，并设置 author
         final_reply_msg = cl.Message(
-            content="", author="AI助手", elements=ai_reply_elements
+            content="", 
+            author="AI助手", 
+            elements=ai_reply_elements
         )
         await final_reply_msg.send()
 
@@ -140,9 +214,22 @@ async def main(message: cl.Message):
         reply_content = ""  #  记录 LLM 最终回复的结果，转成 LLM 用
 
         try:
-            # 获取历史对话
+            # 获取短期记忆历史对话
             history = memory.get_formatted_history()
             
+            print("load history complete")
+            # 搜索长期历史对话
+            similar_interactions = chat_memory.search_similar_interactions(user_message, n_results=3)
+            if similar_interactions and similar_interactions.get('documents'):
+                # 从元数据中获取完整的对话内容
+                relevant_history_list = []
+                relevant_history = "\n相关历史对话：\n"
+                for metadata in similar_interactions['metadatas']:
+                    if len(metadata) == 0:
+                        continue
+                    relevant_history_list.append(f"用户: {metadata['user_input']}\n AI助手: {metadata['assistant_response']}\n")
+                if len(relevant_history_list) > 0:
+                    history += "\n相关历史对话：\n" + "\n".join(relevant_history_list)
             # 构建提示
             prompt = prompt_template_str.format(
                 personality_config=personality_prompt,
@@ -242,6 +329,12 @@ async def main(message: cl.Message):
             # 添加AI回复到记忆
             if reply_content:
                 memory.add_ai_message(reply_content)
+                # 同时保存到向量数据库
+                chat_memory.add_interaction(
+                    user_input=user_message,
+                    assistant_response=reply_content,
+                    metadata={"model": OLLAMA_MODEL_NAME}
+                )
 
             audio_path = text_to_speech(reply_content)
             output_audio_el = cl.Audio(
