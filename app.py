@@ -5,45 +5,8 @@ from gradio_client import Client, file
 import requests
 from prompts.prompt_generator import generate_prompt
 from memory import ShortTermMemory, ChatMemory
-
-# --- 配置 ---
-OLLAMA_MODEL_NAME = "qwen3:14b"  # 您在 Ollama 中部署的模型名
-OLLAMA_BASE_URL = "http://localhost:11434"  # 您的 Ollama 服务地址
-AVATAR_IMAGE_PATH = "./img/avatar.png"  # 【新增/修改】确保您的头像图片在此路径
-WHISPER_MODEL_SIZE = "base"  # 新增：Whisper模型大小
-MEMORY_K = 10  # 保留最近10轮对话
-CHAT_MEMORY_DIR = "./memory/chat_memory"  # 向量数据库存储目录
-HISTORY_PAGE_SIZE = 5  # 每页显示的历史记录数
-
-# 加载个性化提示词
-try:
-    personality_prompt = generate_prompt('./prompts/user_config.json')
-except Exception as e:
-    print(f"警告：加载个性化提示词失败 - {e}")
-    personality_prompt = ""
-
-# Define a threshold for detecting silence and a timeout for ending a turn
-SILENCE_THRESHOLD = (
-    3500  # Adjust based on your audio level (e.g., lower for quieter audio)
-)
-SILENCE_TIMEOUT = 1300.0  # Seconds of silence to consider the turn finished
-
-# --- 初始化 LangChain 组件 ---
-llm = Ollama(
-    model=OLLAMA_MODEL_NAME,
-    base_url=OLLAMA_BASE_URL,
-)
-
-# 修改提示模板，加入个性化设定
-prompt_template_str = """{personality_config}
-
-历史对话：
-{history}
-
-用户问题：{input}
-
-请根据以上角色设定和对话历史来回答问题。回答时要自然流畅，不要提及或显式引用角色设定。
-回答："""
+from config import *  # 导入所有配置项
+from prompts.promote_template import prompt_template_str
 
 
 @cl.on_chat_start
@@ -229,7 +192,7 @@ async def main(message: cl.Message):
                     history += "\n相关历史对话：\n" + "\n".join(relevant_history_list)
             # 构建提示
             prompt = prompt_template_str.format(
-                personality_config=personality_prompt,
+                personality_config=generate_prompt('./prompts/user_config.json'),
                 history=history,
                 input=user_message
             )
@@ -365,19 +328,18 @@ def text_to_speech(text: str) -> str:
     """
     try:
         os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
-        client = Client("http://localhost:9872/")
+        client = Client(TTS_BASE_URL)
         
         # 确保参考音频文件存在
-        ref_wav_path = "./TTS/train/参考.wav"
-        if not os.path.exists(ref_wav_path):
-            raise FileNotFoundError(f"参考音频文件不存在: {ref_wav_path}")
+        if not os.path.exists(TTS_REF_WAV_PATH):
+            raise FileNotFoundError(f"参考音频文件不存在: {TTS_REF_WAV_PATH}")
             
         print(f"DEBUG: 开始TTS转换，文本长度: {len(text)}")
-        print(f"DEBUG: 参考音频文件: {ref_wav_path}")
+        print(f"DEBUG: 参考音频文件: {TTS_REF_WAV_PATH}")
         
         result = client.predict(
-            ref_wav_path=file(ref_wav_path),
-            prompt_text="模型切换，请上传并填写参考信息，请填写需要合成的目标文本和语种模式",
+            ref_wav_path=file(TTS_REF_WAV_PATH),
+            prompt_text=TTS_REF_TEXT,
             prompt_language="中文",
             text=text,
             text_language="中文",
