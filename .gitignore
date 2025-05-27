@@ -121,3 +121,6 @@ user_config.json
 
 # 编辑器
 .vscode
+
+# 记忆
+memory/chat_memory
