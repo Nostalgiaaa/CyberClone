@@ -163,7 +163,7 @@ chainlit run app.py -w
     *   替换 `config.py` 中 `AVATAR_IMAGE_PATH` 指向的图片文件。
 
 
-##🤝 贡献
+## 🤝 贡献
 
 如果您对改进 CyberClone 感兴趣，欢迎提交 Pull Requests 或提出 Issues！
 
