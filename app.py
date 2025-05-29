@@ -5,7 +5,7 @@ from gradio_client import Client, file
 from prompts.prompt_generator import generate_prompt
 from memory import ShortTermMemory, ChatMemory
 from config import *  # 导入所有配置项
-from prompts.promote_template import prompt_template_str
+from prompts.prompts_template import prompt_template_str
 import time
 
 
