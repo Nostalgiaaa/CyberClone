@@ -3,6 +3,7 @@ from chromadb.config import Settings
 from typing import List, Dict, Any, Tuple
 from datetime import datetime, timedelta
 import uuid
+import time # 确保 time 模块被导入以使用 time.sleep
 
 class ChatMemory:
     def __init__(self, persist_directory: str = "./memory/chat_memory"):
@@ -14,7 +15,7 @@ class ChatMemory:
         self.client = chromadb.PersistentClient(path=persist_directory)
         self.collection = self.client.get_or_create_collection(
             name="chat_history",
-            metadata={"description": "Store chat history with vector embeddings"}
+            metadata={"description": "存储聊天历史及对应的向量嵌入"}
         )
 
     def add_interaction(self, 
@@ -54,87 +55,47 @@ class ChatMemory:
             ids=[unique_id]
         )
     
-    def get_recent_interactions(self, 
-                              page: int = 1,
-                              page_size: int = 5,
-                              include_total: bool = True) -> Tuple[List[Dict], int]:
-        """获取对话记录，支持分页
-        
-        Args:
-            page: 页码（从1开始）
-            page_size: 每页记录数
-            include_total: 是否返回总记录数
-            
-        Returns:
-            Tuple[List[Dict], int]: (对话记录列表, 总记录数)
-        """
-        # 获取总记录数
-        total_count = 0
-        if include_total:
-            all_count = self.collection.get()
-            total_count = len(all_count["ids"]) if all_count["ids"] else 0
-            
-        if total_count == 0:
-            return [], 0
-            
-        # 计算总页数和当前页
-        total_pages = (total_count + page_size - 1) // page_size
-        actual_page = total_pages - page + 1  # 从最后一页倒数
-        
-        if actual_page < 1:
-            return [], total_count
-            
-        # 获取当前时间戳
-        current_timestamp = int(datetime.now().timestamp() * 1000)
-        
-        # 使用时间戳范围查询，每次获取一页数据
-        results = None
-        for i in range(actual_page):
-            if results is None:
-                # 第一次查询，获取最新的记录
-                results = self.collection.get(
-                    where={"timestamp": {"$lte": current_timestamp}},
-                    limit=page_size
-                )
-            else:
-                # 获取下一页（更早的记录）
-                if not results["metadatas"]:
-                    break
+    def get_all_interactions_sorted(self) -> List[Dict]:
+        """获取所有对话记录，并按时间戳倒序排列（最新的在前）。
                     
-                # 获取当前页最早记录的时间戳
-                min_timestamp = min(m["timestamp"] for m in results["metadatas"])
-                
-                # 查询更早的记录
-                results = self.collection.get(
-                    where={"timestamp": {"$lt": min_timestamp}},
-                    limit=page_size
-                )
-        
-        # 格式化结果
+        Returns:
+            List[Dict]: 所有对话记录的列表，已格式化并排序。
+        """
+        # import pdb;pdb.set_trace()
+        all_results = self.collection.get(include=["metadatas"]) # IDs 默认返回
+
         interactions = []
-        if results and results["ids"]:
-            # 按时间戳倒序排序
-            sorted_indices = list(range(len(results["ids"])))
-            sorted_indices.sort(
-                key=lambda i: results["metadatas"][i]["timestamp"],
-                reverse=True  # 倒序排序，最新的在前
-            )
-            
-            for idx in sorted_indices:
-                print(results["metadatas"][idx])
-                metadata = results["metadatas"][idx]
-                # 将数值型时间戳转换回ISO格式用于显示
-                display_timestamp = datetime.fromtimestamp(
-                    metadata["timestamp"] / 1000
-                ).isoformat()
-                
-                # 构建返回数据
-                interaction_data = {
-                    "id": results["ids"][idx],
-                    "user_input": metadata["user_input"],
-                    "assistant_response": metadata["assistant_response"],
-                    "metadata": {
+        if all_results and all_results["ids"]:
+            temp_list_for_sorting = []
+            meta_map = {id_val: meta for id_val, meta in zip(all_results.get("ids", []), all_results.get("metadatas", []))}
+
+            for id_val in all_results["ids"]:
+                metadata = meta_map.get(id_val)
+                if metadata and \
+                   "timestamp" in metadata and \
+                   metadata.get("user_input") is not None and \
+                   metadata.get("assistant_response") is not None:
+                    temp_list_for_sorting.append({
+                        "id": id_val,
+                        "user_input": metadata["user_input"],
+                        "assistant_response": metadata["assistant_response"],
                         "timestamp": metadata["timestamp"],
+                        "original_metadata": metadata
+                    })
+            
+            # 按时间戳降序（最新的在前）
+            temp_list_for_sorting.sort(key=lambda x: x["timestamp"], reverse=True)
+            
+            for item in temp_list_for_sorting:
+                metadata = item["original_metadata"]
+                display_timestamp = datetime.fromtimestamp(item["timestamp"] / 1000).isoformat()
+                
+                interaction_data = {
+                    "id": item["id"],
+                    "user_input": item["user_input"],
+                    "assistant_response": item["assistant_response"],
+                    "metadata": {
+                        "timestamp": item["timestamp"],
                         "display_timestamp": display_timestamp,
                         **{k: v for k, v in metadata.items() 
                            if k not in ["timestamp", "type", "user_input", "assistant_response"]}
@@ -142,33 +103,40 @@ class ChatMemory:
                 }
                 interactions.append(interaction_data)
         
-        return interactions, total_count
+        return interactions
     
     def format_interactions_for_display(self, interactions: List[Dict]) -> List[Dict[str, Any]]:
         """将对话记录格式化为 Chainlit 消息格式
         
         Args:
-            interactions: 对话记录列表
+            interactions: 对话记录列表 (期望这里的interactions已经是按所需顺序排列好的)
             
         Returns:
             List[Dict[str, Any]]: Chainlit 消息列表
         """
         formatted_messages = []
-        for interaction in interactions:
-            timestamp = datetime.fromisoformat(interaction["metadata"]["display_timestamp"])
-            formatted_time = timestamp.strftime("%Y-%m-%d %H:%M:%S")
+        for interaction in interactions: # 假设传入的 interactions 已经是期望的显示顺序
+            if "metadata" in interaction and "display_timestamp" in interaction["metadata"]:
+                try:
+                    timestamp = datetime.fromisoformat(interaction["metadata"]["display_timestamp"])
+                    formatted_time = timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    formatted_time = "无效时间"
+            else:
+                formatted_time = "未知时间"
             
-            # 添加用户消息
+            user_input = interaction.get("user_input", "[用户输入缺失]")
+            assistant_response = interaction.get("assistant_response", "[AI回复缺失]")
+
             formatted_messages.append({
                 "author": "用户",
-                "content": interaction["user_input"],
+                "content": user_input,
                 "metadata": {"timestamp": formatted_time}
             })
             
-            # 添加AI回复
             formatted_messages.append({
                 "author": "AI助手",
-                "content": interaction["assistant_response"],
+                "content": assistant_response,
                 "metadata": {"timestamp": formatted_time}
             })
         
@@ -181,6 +149,7 @@ class ChatMemory:
         results = self.collection.query(
             query_texts=[query],
             n_results=n_results,
+            include=["metadatas", "documents"]
         )
         
         return results
@@ -191,12 +160,11 @@ class ChatMemory:
             (datetime.now() - timedelta(days=days_to_keep)).timestamp() * 1000
         )
         
-        # 获取需要删除的记录
         results = self.collection.get(
             where={"timestamp": {"$lt": cutoff_timestamp}}
         )
         
-        if results["ids"]:
+        if results and results["ids"]:
             self.collection.delete(ids=results["ids"])
             return len(results["ids"])
         
@@ -208,12 +176,40 @@ class ChatMemory:
         Returns:
             int: 删除的记录数量
         """
-        # 获取所有记录
-        results = self.collection.get()
-        
-        if results["ids"]:
-            count = len(results["ids"])
-            self.collection.delete(ids=results["ids"])
+        all_results = self.collection.get() 
+        all_ids = all_results.get("ids", [])
+
+        if all_ids:
+            count = len(all_ids)
+            self.collection.delete(ids=all_ids)
             return count
-            
         return 0 
+    
+if __name__ == "__main__":
+    chat_memory = ChatMemory()
+    
+    print("清空所有记录...")
+    chat_memory.clear_all()
+    print("添加10条测试数据...")
+    for i in range(10):
+        chat_memory.add_interaction(f"用户说{i}", f"AI回复{i}", metadata={"custom_field": f"value_{i}"})
+        time.sleep(0.01) 
+    print("测试数据添加完毕.")
+
+    print("\n--- 测试获取所有排序后的交互记录 ---")
+    all_sorted_interactions = chat_memory.get_all_interactions_sorted()
+    print(f"获取到的总交互数: {len(all_sorted_interactions)}")
+    # 打印时，因为获取的是时间倒序（最新的在前），所以直接打印就是最新的在前
+    for item in all_sorted_interactions:
+        print(f"  ID: {item['id']}, Time: {item['metadata']['display_timestamp']}, User: {item['user_input']}")
+
+    # 如果要在 __main__ 中模拟 app.py 的显示顺序 (最老的在前)
+    print("\n--- 模拟 app.py 显示顺序 (最老的在前) --- ")
+    if all_sorted_interactions:
+        # format_interactions_for_display 期望的输入顺序就是最终显示顺序
+        # 所以如果想让老的在前，需要反转 get_all_interactions_sorted 的结果
+        display_ordered_interactions = list(reversed(all_sorted_interactions))
+        formatted_for_display = chat_memory.format_interactions_for_display(display_ordered_interactions)
+        for msg in formatted_for_display:
+            print(f"  Author: {msg['author']}, Content: {msg['content']}, Time: {msg['metadata']['timestamp']}")
+

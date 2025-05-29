@@ -2,11 +2,11 @@ import os
 import chainlit as cl
 from langchain_community.llms import Ollama 
 from gradio_client import Client, file
-import requests
 from prompts.prompt_generator import generate_prompt
 from memory import ShortTermMemory, ChatMemory
 from config import *  # 导入所有配置项
 from prompts.promote_template import prompt_template_str
+import time
 
 
 @cl.on_chat_start
@@ -21,34 +21,25 @@ async def start_chat():
     cl.user_session.set("memory", memory)
     cl.user_session.set("chat_memory", chat_memory)
     
-    # 获取最后一页的历史记录
-    interactions, total_count = chat_memory.get_recent_interactions(
-        page=1,
-        page_size=HISTORY_PAGE_SIZE
-    )
+    # 获取所有按时间倒序的历史记录 (最新的在前)
+    all_interactions_sorted_desc = chat_memory.get_all_interactions_sorted()
     
-    if interactions:
-        # 计算总页数
-        total_pages = (total_count + HISTORY_PAGE_SIZE - 1) // HISTORY_PAGE_SIZE
-        cl.user_session.set("total_pages", total_pages)
-        cl.user_session.set("current_page", 1)
+    if all_interactions_sorted_desc:
+        # 为了在聊天界面中按正常顺序显示 (最老的在前，最新的在后，新消息追加在底部),
+        # 我们需要将获取到的倒序历史再反转一次。
+        # format_interactions_for_display 期望的输入顺序就是最终的显示顺序。
+        interactions_for_display = list(reversed(all_interactions_sorted_desc))
         
-        # 创建操作按钮
-        actions = []
-        if total_pages > 1:
-            actions.append(cl.Action(name="load_history", value="load", label="查看更早的对话"))
-            
-        # 发送历史消息
-        messages = chat_memory.format_interactions_for_display(interactions)
-        for msg in messages:
+        messages_to_send = chat_memory.format_interactions_for_display(interactions_for_display)
+        for msg_data in messages_to_send:
             m = cl.Message(
-                content=msg["content"],
-                author=msg["author"],
-                metadata={"time": msg["metadata"]["timestamp"]},
+                content=msg_data["content"],
+                author=msg_data["author"],
+                metadata={"time": msg_data["metadata"]["timestamp"]},
             )
             await m.send()
 
-    # 发送欢迎消息
+    # 发送欢迎消息 - 这将是用户看到的第一条 "实时" 消息，显示在所有历史之后
     elements = []
     if os.path.exists(AVATAR_IMAGE_PATH):
         try:
@@ -64,55 +55,11 @@ async def start_chat():
             )
         except Exception as e:
             print(f"错误：加载欢迎消息头像图片失败 - {e}")
-
     await cl.Message(
-        content=f"你好！我是基于 **{OLLAMA_MODEL_NAME}** 模型的AI助手。请问有什么可以帮您的吗？",
+        content=f"你好！请问有什么可以帮您的吗？",
         elements=elements,
         author="AI助手",
     ).send()
-
-@cl.action_callback("load_history")
-async def on_load_history(action):
-    chat_memory = cl.user_session.get("chat_memory") # chat_memory 是 ChatMemory 类的实例
-    current_page = cl.user_session.get("current_page", 1)
-    total_pages = cl.user_session.get("total_pages", 1) 
-    
-    if current_page >= total_pages:
-        return
-    
-    next_page = current_page + 1
-    
-    # 获取更早的历史记录
-    interactions, _ = chat_memory.get_recent_interactions(
-        page=next_page,
-        page_size=HISTORY_PAGE_SIZE,
-        include_total=False
-    )
-    
-    if interactions:
-        # 创建操作按钮
-        actions = []
-        if next_page < total_pages:
-            actions.append(cl.Action(name="load_history", value="load", label="查看更早的对话"))
-        
-        # 更新当前页码
-        cl.user_session.set("current_page", next_page)
-        
-        # 发送页码信息
-        await cl.Message(
-            content=f"历史对话记录（第{next_page}/{total_pages}页）：",
-            actions=actions
-        ).send()
-        
-        # 发送历史消息
-        messages = chat_memory.format_interactions_for_display(interactions)
-        for msg in messages:
-            m = cl.Message(
-                content=msg["content"],
-                author=msg["author"],
-                metadata={"time": msg["metadata"]["timestamp"]},
-            )
-            await m.send()
 
 @cl.on_audio_start
 async def on_audio_start():
@@ -176,18 +123,15 @@ async def main(message: cl.Message):
         try:
             # 获取短期记忆历史对话
             history = memory.get_formatted_history()
-            
-            print("load history complete")
             # 搜索长期历史对话
             similar_interactions = chat_memory.search_similar_interactions(user_message, n_results=3)
             if similar_interactions and similar_interactions.get('documents'):
                 # 从元数据中获取完整的对话内容
                 relevant_history_list = []
-                relevant_history = "\n相关历史对话：\n"
                 for metadata in similar_interactions['metadatas']:
                     if len(metadata) == 0:
                         continue
-                    relevant_history_list.append(f"用户: {metadata['user_input']}\n AI助手: {metadata['assistant_response']}\n")
+                    relevant_history_list.append(f"用户: {metadata[0]['user_input']}\n AI助手: {metadata[0]['assistant_response']}\n")
                 if len(relevant_history_list) > 0:
                     history += "\n相关历史对话：\n" + "\n".join(relevant_history_list)
             # 构建提示

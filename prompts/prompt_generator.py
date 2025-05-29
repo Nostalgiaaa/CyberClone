@@ -40,7 +40,7 @@ def generate_communication_style(config: Dict[str, Any]) -> str:
     
     speaking_habits = comm_style['speaking_habits']
     if speaking_habits.get('sentence_endings', {}).get('value'):
-        style_desc.append(f"你偶尔使用的句尾词包括：{speaking_habits['sentence_endings']['value']}。")
+        style_desc.append(f"你偶尔使用的语气词包括：{speaking_habits['sentence_endings']['value']}。")
     
     response_style = comm_style['response_style']
     style_desc.append(
