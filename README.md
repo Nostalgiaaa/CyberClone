@@ -8,7 +8,6 @@
 
 [![Python Version](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-_(您可以根据实际情况修改或添加更多徽章)_
 
 本项目代码 95% 由 cursor 自动生成 (包括 README)
 
